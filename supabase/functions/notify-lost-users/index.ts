@@ -65,10 +65,11 @@ serve(async (req: Request): Promise<Response> => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Fetch active lost items matching the category
+    // Fetch active lost items that may match the category
+    // Then enforce case-sensitive matching in-function
     const { data: lostItems, error: lostErr } = await supabase
       .from("items")
-      .select("user_id, contact_info")
+      .select("user_id, contact_info, category, type")
       .eq("type", "lost")
       .eq("category", category)
       .eq("status", "active");
@@ -81,7 +82,12 @@ serve(async (req: Request): Promise<Response> => {
       });
     }
 
-    if (!lostItems || lostItems.length === 0) {
+    // Enforce case-sensitive matching for both type and category to be safe
+    const strictMatches = (lostItems || []).filter(
+      (it: any) => it?.type === "lost" && it?.category === category
+    );
+
+    if (!strictMatches || strictMatches.length === 0) {
       return new Response(JSON.stringify({ message: "No matching lost items" }), {
         status: 200,
         headers: { "Content-Type": "application/json", ...corsHeaders },
@@ -99,7 +105,7 @@ serve(async (req: Request): Promise<Response> => {
     const recipientEmails = new Set<string>();
 
     // Use contact_info if it looks like an email
-    for (const item of lostItems as Array<{ user_id: string; contact_info: string | null }>) {
+    for (const item of strictMatches as Array<{ user_id: string; contact_info: string | null }>) {
       if (item.contact_info && item.contact_info.includes("@")) {
         if (!foundPosterEmail || item.contact_info.toLowerCase() !== foundPosterEmail.toLowerCase()) {
           recipientEmails.add(item.contact_info.trim());
@@ -108,7 +114,7 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     // Also include the account email for each unique user_id
-    const uniqueUserIds = Array.from(new Set(lostItems.map((i: any) => i.user_id)));
+    const uniqueUserIds = Array.from(new Set(strictMatches.map((i: any) => i.user_id)));
     const adminLookups = await Promise.all(
       uniqueUserIds.map((uid) => supabase.auth.admin.getUserById(uid))
     );
