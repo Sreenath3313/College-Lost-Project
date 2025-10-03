@@ -75,18 +75,38 @@ export const ReportItemDialog = ({ open, onOpenChange, type, onSuccess }: Report
         imageUrl = publicUrl;
       }
 
-      const { error } = await supabase.from('items').insert({
-        user_id: user.id,
-        type,
-        title,
-        description,
-        category,
-        location,
-        contact_info: contactInfo,
-        image_url: imageUrl,
-      });
+      const { data: insertedItem, error } = await supabase
+        .from('items')
+        .insert({
+          user_id: user.id,
+          type,
+          title,
+          description,
+          category,
+          location,
+          contact_info: contactInfo,
+          image_url: imageUrl,
+        })
+        .select('*')
+        .single();
 
       if (error) throw error;
+
+      // Fire notification to lost-item reporters when a found item is created
+      if (type === 'found' && insertedItem) {
+        try {
+          await supabase.functions.invoke('notify-lost-users', {
+            body: {
+              category,
+              foundItemId: insertedItem.id,
+              foundByUserId: user.id,
+              foundItemTitle: title,
+            },
+          });
+        } catch (notifyError) {
+          console.error('Failed to invoke notify-lost-users function:', notifyError);
+        }
+      }
 
       toast.success(`Item reported as ${type} successfully!`);
       onSuccess();
