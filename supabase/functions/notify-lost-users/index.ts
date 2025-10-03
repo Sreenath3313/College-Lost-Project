@@ -7,8 +7,19 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
+
+// Supabase credentials
+const SUPABASE_URL = "https://lhnrkyfqiulvwvkdxipa.supabase.co";
+const SUPABASE_SERVICE_ROLE_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxobnJreWZxaXVsdnd2a2R4aXBhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTQ4MjMwNywiZXhwIjoyMDc1MDU4MzA3fQ.BE23gtZOSIgIUsLbX_DJ-Fu9n3xGq_E-Be9MNt5cw-A";
+
+// Optional: Replace with your Resend API key + email sender
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
+const EMAIL_FROM =
+  Deno.env.get("EMAIL_FROM") || "Campus Finder <onboarding@resend.dev>";
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") {
@@ -42,25 +53,7 @@ serve(async (req: Request): Promise<Response> => {
       });
     }
 
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
-    const EMAIL_FROM = Deno.env.get("EMAIL_FROM") || "Campus Finder <onboarding@resend.dev>";
-
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response(JSON.stringify({ error: "Missing Supabase service credentials" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
-    }
-
-    if (!RESEND_API_KEY) {
-      return new Response(JSON.stringify({ error: "Missing RESEND_API_KEY" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
-    }
-
+    // Connect with service role key
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
@@ -91,17 +84,22 @@ serve(async (req: Request): Promise<Response> => {
     // Determine the found poster's email (to avoid emailing themselves)
     let foundPosterEmail: string | null = null;
     if (foundByUserId) {
-      const { data: foundUserData } = await supabase.auth.admin.getUserById(foundByUserId);
+      const { data: foundUserData } = await supabase.auth.admin.getUserById(
+        foundByUserId,
+      );
       foundPosterEmail = foundUserData?.user?.email ?? null;
     }
 
     // Collect recipient emails
     const recipientEmails = new Set<string>();
-
-    // Use contact_info if it looks like an email
-    for (const item of lostItems as Array<{ user_id: string; contact_info: string | null }>) {
+    for (const item of lostItems as Array<
+      { user_id: string; contact_info: string | null }
+    >) {
       if (item.contact_info && item.contact_info.includes("@")) {
-        if (!foundPosterEmail || item.contact_info.toLowerCase() !== foundPosterEmail.toLowerCase()) {
+        if (
+          !foundPosterEmail ||
+          item.contact_info.toLowerCase() !== foundPosterEmail.toLowerCase()
+        ) {
           recipientEmails.add(item.contact_info.trim());
         }
       }
@@ -110,12 +108,15 @@ serve(async (req: Request): Promise<Response> => {
     // Also include the account email for each unique user_id
     const uniqueUserIds = Array.from(new Set(lostItems.map((i: any) => i.user_id)));
     const adminLookups = await Promise.all(
-      uniqueUserIds.map((uid) => supabase.auth.admin.getUserById(uid))
+      uniqueUserIds.map((uid) => supabase.auth.admin.getUserById(uid)),
     );
 
     for (const result of adminLookups) {
       const email = result.data?.user?.email;
-      if (email && (!foundPosterEmail || email.toLowerCase() !== foundPosterEmail.toLowerCase())) {
+      if (
+        email &&
+        (!foundPosterEmail || email.toLowerCase() !== foundPosterEmail.toLowerCase())
+      ) {
         recipientEmails.add(email.trim());
       }
     }
@@ -142,29 +143,46 @@ serve(async (req: Request): Promise<Response> => {
       </div>
     `;
 
-    const resendResp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
-    });
-
-    if (!resendResp.ok) {
-      const text = await resendResp.text();
-      console.error("Resend API error:", resendResp.status, text);
-      return new Response(JSON.stringify({ error: "Email send failed", details: text }), {
-        status: 502,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+    // Send via Resend API if configured
+    if (RESEND_API_KEY) {
+      const resendResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
       });
+
+      if (!resendResp.ok) {
+        const text = await resendResp.text();
+        console.error("Resend API error:", resendResp.status, text);
+        return new Response(JSON.stringify({ error: "Email send failed", details: text }), {
+          status: 502,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
+        });
+      }
+
+      const resendJson = await resendResp.json();
+
+      return new Response(
+        JSON.stringify({
+          message: "Notifications sent",
+          recipients: to.length,
+          resend: resendJson,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } },
+      );
     }
 
-    const resendJson = await resendResp.json();
-
+    // Fallback if no RESEND_API_KEY set
     return new Response(
-      JSON.stringify({ message: "Notifications sent", recipients: to.length, resend: resendJson }),
-      { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      JSON.stringify({
+        message: "Notifications prepared (email not sent, no RESEND_API_KEY)",
+        recipients: to.length,
+        recipientsList: to,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } },
     );
   } catch (err) {
     console.error("notify-lost-users error:", err);
